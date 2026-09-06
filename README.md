@@ -1,8 +1,12 @@
-# impossible-wire — THE WIRE
+# DISTRANS — THE WIRE
 
 > Reliable transport built over a deliberately hostile, unordered, lossy channel.
 
-Part of **[The Impossible Computer](https://github.com/n-3-0-l-d-3-v/impossible-computer)** — a constrained computing
+## Why "DISTRANS"
+
+An actual in-universe device: a coded transmitter (often implanted in a bat) used to carry distorted messages across distance through a channel that is inherently hard to intercept and easy to lose. That is the exact job of this component — build something reliable and legible on top of a channel that offers no guarantees.
+
+Part of **[ARRAKIS](https://github.com/n-3-0-l-d-3-v/arrakis)** — a constrained computing
 ecosystem built by removing assumptions ordinary computers depend on. This
 repository is developed standalone and mirrored into the combined ecosystem
 repo commit-for-commit.
@@ -29,14 +33,14 @@ Framing, checksums/integrity, sequence numbers, ACKs, retransmission, selective 
 
 ## Sibling repositories
 
-- [impossible-machine](https://github.com/n-3-0-l-d-3-v/impossible-machine) — THE MACHINE (ACTIVE)
-- [impossible-language](https://github.com/n-3-0-l-d-3-v/impossible-language) — THE LANGUAGE (QUEUED)
-- [impossible-kernel](https://github.com/n-3-0-l-d-3-v/impossible-kernel) — THE KERNEL (QUEUED)
-- [impossible-vault](https://github.com/n-3-0-l-d-3-v/impossible-vault) — THE VAULT (QUEUED)
-- [impossible-database](https://github.com/n-3-0-l-d-3-v/impossible-database) — THE DATABASE (QUEUED)
-- [impossible-colony](https://github.com/n-3-0-l-d-3-v/impossible-colony) — THE COLONY (QUEUED)
-- [impossible-history](https://github.com/n-3-0-l-d-3-v/impossible-history) — THE HISTORY (QUEUED)
-- [impossible-artifact](https://github.com/n-3-0-l-d-3-v/impossible-artifact) — THE ARTIFACT (STRETCH)
+- [mentat](https://github.com/n-3-0-l-d-3-v/mentat) — THE MACHINE (COMPLETE)
+- [chakobsa](https://github.com/n-3-0-l-d-3-v/chakobsa) — THE LANGUAGE (QUEUED)
+- [muaddib](https://github.com/n-3-0-l-d-3-v/muaddib) — THE KERNEL (QUEUED)
+- [sietch](https://github.com/n-3-0-l-d-3-v/sietch) — THE VAULT (ACTIVE)
+- [choam](https://github.com/n-3-0-l-d-3-v/choam) — THE DATABASE (QUEUED)
+- [landsraad](https://github.com/n-3-0-l-d-3-v/landsraad) — THE COLONY (QUEUED)
+- [ghola](https://github.com/n-3-0-l-d-3-v/ghola) — THE HISTORY (QUEUED)
+- [shai-hulud](https://github.com/n-3-0-l-d-3-v/shai-hulud) — THE ARTIFACT (STRETCH)
 
 ## Development
 
