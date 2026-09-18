@@ -5,6 +5,7 @@ members = [
     "crates/frame",
     "crates/transport",
     "crates/rpc",
+    "crates/workload",
 ]
 
 [workspace.package]

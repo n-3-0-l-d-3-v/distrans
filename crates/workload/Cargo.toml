@@ -1,0 +1,19 @@
+[package]
+name = "workload"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+channel = { path = "../channel" }
+frame = { path = "../frame" }
+transport = { path = "../transport" }
+rpc = { path = "../rpc" }
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[[bin]]
+name = "distrans-chaos"
+path = "src/bin/distrans-chaos.rs"
