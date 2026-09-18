@@ -1,5 +1,5 @@
 ---
-status: open
+status: done
 phase: 5
 ---
 
@@ -10,27 +10,26 @@ that guarantees nothing, with virtual time and seeded, reproducible
 fault injection, per `docs/design/WIRE.md`.
 
 ## Scope
-- `Tick`: virtual time, advanced only by the simulator. No layer in this
-  repo may read physical time (mirrors muaddib's `no_wall_clock` guard —
-  this repo gets an analogous `no_wall_clock` test).
-- `Channel`: an event-driven virtual-time queue of in-flight datagrams
-  between two endpoints, each carrying an arrival tick.
-- A `FaultProfile`: independent probabilities/parameters for loss,
-  duplication, reordering (via randomized extra delay), corruption
-  (bit-flip within the payload), and truncation.
-- Seeded fault injection: a hand-rolled deterministic PRNG (no external
-  `rand` dependency, so a recorded seed can't stop reproducing after a
-  dependency bump — see muaddib's `workload::rng::SplitMix64` for the
-  precedent).
-- A scripted-fault mode: an explicit list of "at datagram N, do X" rules,
-  for deterministic regression tests of one specific corner case,
-  independent of the random profile.
-- Per-channel fault statistics (datagrams sent/delivered/dropped/
-  duplicated/reordered/corrupted/truncated) for observability.
-- Property test: for an arbitrary seed and fault profile, the resulting
-  sequence of channel events is reproduced exactly by a second run with
-  the same seed and profile.
-- Property test: each fault's observed rate over a large number of
-  datagrams is statistically consistent with its configured probability.
+- [x] `Tick`: virtual time, advanced only by the simulator.
+- [x] `Channel`: an event-driven virtual-time queue of in-flight
+      datagrams, each carrying an arrival tick.
+- [x] `FaultProfile`: independent loss/duplication/reorder/corruption/
+      truncation probabilities plus a base transit delay.
+- [x] Seeded fault injection via a hand-rolled `SplitMix64` (no `rand`
+      dependency, for cross-version-stable replay).
+- [x] `Script`/`ScriptedFault`: explicit per-datagram-index overrides,
+      additive with the random profile.
+- [x] Per-channel `FaultStats` (sent/delivered/dropped/duplicated/
+      reordered/corrupted/truncated).
+- [x] Property test: a `(seed, profile)` run replays byte-for-byte and
+      stats-for-stats identically —
+      `same_seed_and_profile_reproduce_exactly` (256 cases).
+- [x] Property test (statistical): each fault's observed rate matches its
+      configured probability within tolerance —
+      `observed_fault_rates_match_configured_probabilities` (5
+      probabilities × 3 seeds × 4 fault kinds, N=20,000 each).
+- [x] `no_wall_clock` guard test, mirroring muaddib's.
 
-Not started. No dependencies (first ticket of the phase).
+21 unit tests, 3 property tests, 1 statistical test, 1 guard test — all
+mutation-checked (disabling loss injection is caught by two different
+tests). See `docs/design/decisions/ADR-001-hostile-channel.md`.
