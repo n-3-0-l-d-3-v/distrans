@@ -6,15 +6,17 @@
 //!
 //! Layout (little-endian), prepended to any application data:
 //! ```text
-//! bytes 0..4:  cumulative ack (next contiguous byte expected)
-//! byte  4:     sack range count (0..=MAX_SACK_RANGES)
+//! bytes 0..4:   cumulative ack (next contiguous byte expected)
+//! byte  4:      fin_ack (0 or 1)
+//! byte  5:      sack range count (0..=MAX_SACK_RANGES)
+//! bytes 6..10:  advertised receive window, in bytes (ticket 004)
 //! then, per range: (start: u32, end: u32) — inclusive byte offsets,
 //! sorted ascending, non-overlapping, each entirely beyond the cumulative
 //! ack.
 //! ```
 
 pub const MAX_SACK_RANGES: usize = 4;
-const FIXED_LEN: usize = 6; // ack(4) + fin_ack(1) + sack count(1)
+const FIXED_LEN: usize = 10; // ack(4) + fin_ack(1) + sack count(1) + window(4)
 const RANGE_LEN: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,10 +31,18 @@ pub struct SackRange {
 /// why FIN's reliability is tracked separately from data's, with its own
 /// explicit acknowledgment, rather than consuming byte-sequence space
 /// the way TCP's FIN does.
+///
+/// `window` (ticket 004) is this side's currently advertised receive
+/// window in bytes: how much more it is willing to buffer right now
+/// (`Config::recv_window_capacity` minus bytes already held, out of
+/// order or delivered-but-undrained). Every segment carries it, including
+/// handshake ones, so the peer's flow control has a real number from the
+/// very first round trip.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SegmentHeader {
     pub ack: u32,
     pub fin_ack: bool,
+    pub window: u32,
     pub sack: Vec<SackRange>,
 }
 
@@ -42,6 +52,7 @@ impl SegmentHeader {
         out.push(u8::from(self.fin_ack));
         let count = self.sack.len().min(MAX_SACK_RANGES) as u8;
         out.push(count);
+        out.extend_from_slice(&self.window.to_le_bytes());
         for r in self.sack.iter().take(MAX_SACK_RANGES) {
             out.extend_from_slice(&r.start.to_le_bytes());
             out.extend_from_slice(&r.end.to_le_bytes());
@@ -59,6 +70,7 @@ impl SegmentHeader {
         let ack = u32::from_le_bytes(data[0..4].try_into().unwrap());
         let fin_ack = data[4] != 0;
         let count = data[5] as usize;
+        let window = u32::from_le_bytes(data[6..10].try_into().unwrap());
         let ranges_len = count * RANGE_LEN;
         if data.len() < FIXED_LEN + ranges_len {
             return None;
@@ -71,7 +83,15 @@ impl SegmentHeader {
             sack.push(SackRange { start, end });
             offset += RANGE_LEN;
         }
-        Some((SegmentHeader { ack, fin_ack, sack }, &data[offset..]))
+        Some((
+            SegmentHeader {
+                ack,
+                fin_ack,
+                window,
+                sack,
+            },
+            &data[offset..],
+        ))
     }
 }
 
@@ -84,6 +104,7 @@ mod tests {
         let h = SegmentHeader {
             ack: 42,
             fin_ack: false,
+            window: 4096,
             sack: vec![],
         };
         let mut buf = Vec::new();
@@ -98,6 +119,7 @@ mod tests {
         let h = SegmentHeader {
             ack: 1,
             fin_ack: true,
+            window: 0,
             sack: vec![],
         };
         let mut buf = Vec::new();
@@ -110,6 +132,7 @@ mod tests {
         let h = SegmentHeader {
             ack: 7,
             fin_ack: false,
+            window: 1234,
             sack: vec![
                 SackRange { start: 10, end: 19 },
                 SackRange { start: 30, end: 39 },
@@ -130,8 +153,8 @@ mod tests {
 
     #[test]
     fn decode_rejects_a_range_count_that_overruns_the_buffer() {
-        let mut buf = vec![0u8; 5];
-        buf.push(2); // claims 2 ranges = 16 more bytes, none present
+        let mut buf = vec![0u8; FIXED_LEN];
+        buf[5] = 2; // claims 2 ranges = 16 more bytes, none present
         assert_eq!(SegmentHeader::decode(&buf), None);
     }
 
@@ -140,6 +163,7 @@ mod tests {
         let h = SegmentHeader {
             ack: 0,
             fin_ack: false,
+            window: 0,
             sack: (0..10).map(|i| SackRange { start: i, end: i }).collect(),
         };
         let mut buf = Vec::new();

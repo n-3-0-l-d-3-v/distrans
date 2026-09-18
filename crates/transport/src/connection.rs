@@ -47,25 +47,31 @@ pub enum State {
 pub struct Config {
     /// Maximum application bytes per data segment.
     pub segment_size: usize,
-    /// Maximum number of data segments outstanding (sent, unacknowledged)
-    /// at once — a fixed stand-in for real flow/congestion control until
-    /// ticket 004 replaces it with a real advertised/congestion window.
-    pub max_in_flight_segments: usize,
+    /// How many bytes of out-of-order + undrained-but-delivered data this
+    /// side is willing to buffer — what it advertises to the peer as its
+    /// receive window (ticket 004). The peer's admission control never
+    /// lets more than this much of its data be unacknowledged at once.
+    pub recv_window_capacity: u32,
     pub min_rto: u64,
     pub max_rto: u64,
     /// A segment or control message failing this many consecutive
     /// (re)transmissions fails the connection.
     pub max_retries: u32,
+    /// Consecutive duplicate ACKs (same cumulative ack, still-outstanding
+    /// data) before fast-retransmitting the oldest unacked segment
+    /// without waiting for the RTO timer.
+    pub fast_retransmit_dup_acks: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             segment_size: 512,
-            max_in_flight_segments: 8,
+            recv_window_capacity: 8192,
             min_rto: 2,
             max_rto: 500,
             max_retries: 12,
+            fast_retransmit_dup_acks: 3,
         }
     }
 }
@@ -79,6 +85,8 @@ pub struct Stats {
     pub bytes_sent_app: u64,
     pub bytes_delivered_app: u64,
     pub duplicate_bytes_received: u64,
+    pub fast_retransmits: u64,
+    pub congestion_events: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +123,19 @@ pub struct Connection {
     close_requested: bool,
     fin_pending: Option<PendingControl>,
     fin_acked: bool,
+    /// The peer's most recently advertised receive window, in bytes
+    /// (ticket 004). Starts optimistic (one segment) so the very first
+    /// send isn't stalled before any real advertisement has arrived —
+    /// which in practice never happens, since data can't be sent before
+    /// `Established`, and the handshake itself carries a real window.
+    peer_window: u32,
+    /// Congestion window, in bytes (ticket 004, RFC 5681-style AIMD).
+    cwnd: u32,
+    ssthresh: u32,
+    /// Consecutive ACKs seen at the same (already-cumulatively-acked)
+    /// sequence number while data is still outstanding — a signal of
+    /// likely loss, per fast retransmit.
+    dup_ack_count: u32,
 
     // Receive side.
     expected_seq: u32,
@@ -134,6 +155,7 @@ fn encode_frame(sequence: u32, flags: u16, payload: Vec<u8>) -> Vec<u8> {
 
 impl Connection {
     fn blank(config: Config, now: Tick, state: State) -> Self {
+        let initial_cwnd = (2 * config.segment_size as u32).max(1);
         Self {
             config,
             state,
@@ -148,6 +170,10 @@ impl Connection {
             close_requested: false,
             fin_pending: None,
             fin_acked: false,
+            peer_window: config.segment_size as u32,
+            cwnd: initial_cwnd,
+            ssthresh: u32::MAX,
+            dup_ack_count: 0,
             expected_seq: 0,
             recv_buffer: BTreeMap::new(),
             delivered: VecDeque::new(),
@@ -200,12 +226,42 @@ impl Connection {
         self.peer_fin_seen
     }
 
+    /// Bytes sent but not yet cumulatively acknowledged — never exceeds
+    /// `effective_window()` (ticket 004's flow/congestion-control
+    /// invariant).
+    pub fn in_flight_bytes(&self) -> u32 {
+        self.unacked.values().map(|s| s.data.len() as u32).sum()
+    }
+
+    /// `min(peer's advertised window, our congestion window)` — the
+    /// current cap on `in_flight_bytes()`.
+    pub fn effective_window(&self) -> u32 {
+        self.peer_window.min(self.cwnd)
+    }
+
+    pub fn cwnd(&self) -> u32 {
+        self.cwnd
+    }
+
+    /// This side's own currently advertised receive window: how much
+    /// more it is willing to buffer right now.
+    fn advertised_window(&self) -> u32 {
+        let held: u32 = self
+            .recv_buffer
+            .values()
+            .map(|v| v.len() as u32)
+            .sum::<u32>()
+            + self.delivered.len() as u32;
+        self.config.recv_window_capacity.saturating_sub(held)
+    }
+
     // ---- Frame builders --------------------------------------------
 
     fn header_bytes(&self) -> Vec<u8> {
         let h = SegmentHeader {
             ack: self.expected_seq,
             fin_ack: false,
+            window: self.advertised_window(),
             sack: self.current_sack_ranges(),
         };
         let mut b = Vec::new();
@@ -235,21 +291,25 @@ impl Connection {
     }
 
     fn build_syn(&self) -> Vec<u8> {
-        encode_frame(0, FLAG_SYN, Vec::new())
+        // Carries a header (ticket 004) purely for its `window` field, so
+        // the peer's flow control has a real advertised window from the
+        // very first round trip rather than only from the first data
+        // segment's ack.
+        encode_frame(0, FLAG_SYN, self.header_bytes())
     }
 
     fn build_synack(&self) -> Vec<u8> {
-        encode_frame(0, FLAG_SYN | FLAG_ACK, Vec::new())
+        encode_frame(0, FLAG_SYN | FLAG_ACK, self.header_bytes())
     }
 
     fn build_handshake_ack(&self) -> Vec<u8> {
-        encode_frame(0, FLAG_ACK, Vec::new())
+        encode_frame(0, FLAG_ACK, self.header_bytes())
     }
 
     fn build_fin(&self) -> Vec<u8> {
-        // FIN carries the normal header (cumulative ack/sack) piggybacked,
-        // so a lost pure-ACK doesn't regress the peer's view of what
-        // we've received.
+        // FIN carries the normal header (cumulative ack/sack/window)
+        // piggybacked, so a lost pure-ACK doesn't regress the peer's view
+        // of what we've received.
         let payload = self.header_bytes();
         encode_frame(self.send_base, FLAG_FIN | FLAG_ACK, payload)
     }
@@ -258,6 +318,7 @@ impl Connection {
         let h = SegmentHeader {
             ack: self.expected_seq,
             fin_ack,
+            window: self.advertised_window(),
             sack: self.current_sack_ranges(),
         };
         let mut payload = Vec::new();
@@ -288,9 +349,32 @@ impl Connection {
         if !matches!(self.state, State::Established | State::Closing) {
             return out;
         }
-        while !self.send_queue.is_empty() && self.unacked.len() < self.config.max_in_flight_segments
-        {
-            let chunk_len = self.config.segment_size.min(self.send_queue.len());
+        loop {
+            if self.send_queue.is_empty() {
+                break;
+            }
+            let in_flight = self.in_flight_bytes();
+            let available = self.effective_window().saturating_sub(in_flight);
+            // With nothing in flight yet, always allow at least one byte
+            // out even if the peer's window/cwnd is smaller than a full
+            // segment — otherwise a tiny advertised window would stall
+            // the connection forever with no way to ever probe it again.
+            // A real implementation would need a zero-window persist
+            // timer for the true zero-window case; this repo doesn't
+            // implement one (see ADR-004's known limitations).
+            let cap = if in_flight == 0 {
+                available.max(1)
+            } else {
+                available
+            };
+            if cap == 0 {
+                break;
+            }
+            let chunk_len = self
+                .config
+                .segment_size
+                .min(self.send_queue.len())
+                .min(cap as usize);
             let data: Vec<u8> = self.send_queue.drain(..chunk_len).collect();
             let seq = self.next_seq;
             self.next_seq += chunk_len as u32;
@@ -366,18 +450,18 @@ impl Connection {
         let Ok(f) = frame::decode(datagram) else {
             return out; // corrupted: indistinguishable from lost, handled by retransmission
         };
-        // A bare SYN/SYN-ACK carries a genuinely empty frame payload (no
-        // transport header at all, since the handshake predates any
-        // ack/sack state worth reporting); everything else's payload
-        // starts with a `SegmentHeader`.
-        let (header, app_payload): (SegmentHeader, &[u8]) = if f.payload.is_empty() {
-            (SegmentHeader::default(), &[])
-        } else {
-            match SegmentHeader::decode(&f.payload) {
-                Some(v) => v,
-                None => return out, // malformed transport header: drop, like a corrupted datagram
-            }
+        // Every segment, including handshake ones (ticket 004: they carry
+        // the advertised window from the first round trip), starts with a
+        // `SegmentHeader`.
+        let (header, app_payload): (SegmentHeader, &[u8]) = match SegmentHeader::decode(&f.payload)
+        {
+            Some(v) => v,
+            None => return out, // malformed transport header: drop, like a corrupted datagram
         };
+        // Every segment (including a bare SYN, before any ACK-guarded
+        // congestion logic runs) tells us the peer's *current* receive
+        // window; always adopt it.
+        self.peer_window = header.window;
 
         let is_syn = f.flags & FLAG_SYN != 0;
         let is_ack = f.flags & FLAG_ACK != 0;
@@ -468,7 +552,7 @@ impl Connection {
 
         if self.state == State::Established || self.state == State::Closing {
             if is_ack {
-                self.apply_ack(&header);
+                out.extend(self.apply_ack(&header));
             }
             let mut should_ack = false;
             if !app_payload.is_empty() {
@@ -489,8 +573,15 @@ impl Connection {
         out
     }
 
-    fn apply_ack(&mut self, header: &SegmentHeader) {
+    /// Applies an incoming ack, including congestion control (ticket
+    /// 004): AIMD `cwnd`/`ssthresh` updates on genuine progress, and fast
+    /// retransmit — resending the oldest unacked segment immediately —
+    /// after `Config::fast_retransmit_dup_acks` consecutive acks that
+    /// repeat the same (already-cumulatively-acked) point while data is
+    /// still outstanding. Returns the fast-retransmit datagram, if any.
+    fn apply_ack(&mut self, header: &SegmentHeader) -> Option<Vec<u8>> {
         if header.ack > self.send_base {
+            let acked_bytes = header.ack - self.send_base;
             let newly_acked: Vec<u32> = self
                 .unacked
                 .range(..header.ack)
@@ -504,6 +595,35 @@ impl Connection {
                 }
             }
             self.send_base = header.ack;
+            self.dup_ack_count = 0;
+            // RFC 5681 AIMD: exponential growth in slow start, ~linear
+            // (one segment per RTT) in congestion avoidance.
+            if self.cwnd < self.ssthresh {
+                self.cwnd = self.cwnd.saturating_add(acked_bytes);
+            } else {
+                let seg = self.config.segment_size as u64;
+                let increment = ((seg * seg) / self.cwnd.max(1) as u64).max(1) as u32;
+                self.cwnd = self.cwnd.saturating_add(increment);
+            }
+        } else if header.ack == self.send_base && !self.unacked.is_empty() {
+            self.dup_ack_count += 1;
+            if self.dup_ack_count == self.config.fast_retransmit_dup_acks {
+                self.dup_ack_count = 0;
+                self.ssthresh = (self.cwnd / 2).max(2 * self.config.segment_size as u32);
+                self.cwnd = self.ssthresh;
+                self.stats.fast_retransmits += 1;
+                self.stats.congestion_events += 1;
+                let retransmit = self.unacked.iter_mut().next().map(|(&seq, seg)| {
+                    seg.retransmit_count += 1;
+                    seg.sent_at = self.now;
+                    (seq, seg.data.clone())
+                });
+                if let Some((seq, data)) = retransmit {
+                    self.stats.data_segments_retransmitted += 1;
+                    let header_bytes = self.header_bytes();
+                    return Some(Self::build_data_frame(seq, &data, &header_bytes));
+                }
+            }
         }
         for r in &header.sack {
             for (_, seg) in self.unacked.range_mut(r.start..=r.end) {
@@ -515,6 +635,7 @@ impl Connection {
             self.fin_pending = None;
             self.check_fully_closed();
         }
+        None
     }
 
     fn deliver_data(&mut self, seq: u32, data: &[u8]) {
@@ -578,6 +699,14 @@ impl Connection {
                 if let Some((_, oldest_sent_at)) = oldest {
                     if (self.now - oldest_sent_at) >= self.rto.current() {
                         self.rto.on_timeout();
+                        // RFC 5681: an RTO is a strong congestion signal —
+                        // multiplicative decrease and restart slow start,
+                        // distinct from fast retransmit's lighter response
+                        // to a handful of duplicate ACKs.
+                        self.ssthresh = (self.cwnd / 2).max(2 * self.config.segment_size as u32);
+                        self.cwnd = self.config.segment_size as u32;
+                        self.dup_ack_count = 0;
+                        self.stats.congestion_events += 1;
                         let header = self.header_bytes();
                         let mut failed = false;
                         for (&seq, seg) in self.unacked.iter_mut() {
@@ -628,10 +757,11 @@ mod tests {
     fn cfg() -> Config {
         Config {
             segment_size: 16,
-            max_in_flight_segments: 4,
+            recv_window_capacity: 4 * 16,
             min_rto: 5,
             max_rto: 100,
             max_retries: 5,
+            fast_retransmit_dup_acks: 3,
         }
     }
 
@@ -727,5 +857,121 @@ mod tests {
         let (header, _) =
             SegmentHeader::decode(&frame::decode(&response[0]).unwrap().payload).unwrap();
         assert!(header.fin_ack);
+    }
+
+    /// Helper: complete a handshake between two freshly constructed
+    /// connections and return them both `Established`.
+    fn established(config: Config) -> (Connection, Connection) {
+        let (mut client, syn) = Connection::connect(config, Tick(0));
+        let mut server = Connection::listen(config, Tick(0));
+        let synack = server.on_datagram(Tick(1), &syn);
+        let ack = client.on_datagram(Tick(2), &synack[0]);
+        server.on_datagram(Tick(3), &ack[0]);
+        assert_eq!(client.state(), State::Established);
+        assert_eq!(server.state(), State::Established);
+        (client, server)
+    }
+
+    /// Ticket 004's admission guarantee, checked directly rather than
+    /// through a multi-tick simulation: a single `send()` call, with no
+    /// intervening timeout or retransmission to confound it, never
+    /// admits more bytes than `effective_window()` allowed at the moment
+    /// it ran. (An end-to-end version of this property was tried first
+    /// and found a "violation" that turned out to be legitimate —
+    /// already-in-flight data surviving an RTO's `cwnd` reset, exactly
+    /// like real TCP; seeADR-004. This direct test is the one that
+    /// actually isolates admission's own behavior.)
+    #[test]
+    fn a_single_send_never_admits_more_than_the_effective_window() {
+        let (mut client, _server) = established(cfg());
+        // Plenty of data queued; segment_size=16, initial cwnd=32.
+        let sent = client.send(Tick(4), &vec![7u8; 1000]);
+        let admitted: usize = sent.iter().map(|d| d.len()).sum();
+        assert!(!sent.is_empty());
+        assert!(
+            client.in_flight_bytes() <= client.effective_window(),
+            "in_flight {} > effective_window {} (datagrams admitted: {admitted} bytes on the wire)",
+            client.in_flight_bytes(),
+            client.effective_window()
+        );
+    }
+
+    /// A shrunk peer window is respected by every *subsequent* admission
+    /// decision, even though (see above) it cannot retroactively recall
+    /// data already sent under a larger one.
+    #[test]
+    fn a_smaller_advertised_window_caps_further_admission() {
+        let (mut client, _server) = established(cfg());
+        // Server advertises almost no room: only 1 byte free.
+        let header = SegmentHeader {
+            ack: 0,
+            fin_ack: false,
+            window: 1,
+            sack: vec![],
+        };
+        let mut payload = Vec::new();
+        header.encode(&mut payload);
+        let tiny_window_ack = encode_frame(0, FLAG_ACK, payload);
+        client.on_datagram(Tick(4), &tiny_window_ack);
+        assert_eq!(client.effective_window(), 1);
+
+        let sent = client.send(Tick(5), &[9u8; 100]);
+        let admitted: usize = sent.iter().map(|d| d.len()).sum();
+        assert!(
+            admitted > 0,
+            "must still send at least 1 byte to avoid deadlock"
+        );
+        assert_eq!(
+            client.in_flight_bytes(),
+            1,
+            "must not admit more than the 1-byte window once something is already in flight"
+        );
+    }
+
+    /// An RTO timeout resets `cwnd` to one segment and halves `ssthresh`
+    /// (floor two segments) — the multiplicative-decrease half of AIMD.
+    #[test]
+    fn a_timeout_resets_the_congestion_window() {
+        let mut config = cfg();
+        config.min_rto = 3;
+        config.max_rto = 20;
+        let (mut client, _server) = established(config);
+        client.send(Tick(4), &[1u8; 64]);
+        let cwnd_before = client.cwnd();
+        assert!(cwnd_before > 0);
+
+        // Advance far past any possible RTO with nothing acking it.
+        client.on_tick(Tick(100));
+        assert_eq!(client.cwnd(), config.segment_size as u32);
+        assert!(client.stats().data_segments_retransmitted > 0);
+    }
+
+    /// Three consecutive duplicate ACKs (same cumulative point, data
+    /// still outstanding) trigger an immediate fast retransmit of the
+    /// oldest unacked segment, without waiting for the RTO timer.
+    #[test]
+    fn three_duplicate_acks_trigger_fast_retransmit() {
+        let (mut client, _server) = established(cfg());
+        client.send(Tick(4), &[1u8; 64]); // queued across several segments given cwnd starts small
+        let dup_ack = {
+            let h = SegmentHeader {
+                ack: 0,
+                fin_ack: false,
+                window: 1000,
+                sack: vec![],
+            };
+            let mut payload = Vec::new();
+            h.encode(&mut payload);
+            encode_frame(0, FLAG_ACK, payload)
+        };
+        client.on_datagram(Tick(5), &dup_ack);
+        client.on_datagram(Tick(6), &dup_ack);
+        let before = client.stats().fast_retransmits;
+        let response = client.on_datagram(Tick(7), &dup_ack);
+        assert_eq!(client.stats().fast_retransmits, before + 1);
+        assert!(
+            response.iter().any(|d| !d.is_empty()),
+            "fast retransmit must actually emit a datagram"
+        );
     }
 }
