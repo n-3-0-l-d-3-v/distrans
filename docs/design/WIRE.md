@@ -43,11 +43,14 @@ crates/frame      -- framing + integrity: a versioned binary header and
                      a CRC-32C trailer; decoding rejects every malformed or
                      corrupted datagram with a typed error, never a panic
                      and never a silently wrong frame (ticket 002)
-crates/transport  -- reliable ordered delivery: sequence numbers,
-                     cumulative + selective ACKs, selective-repeat
-                     receive buffer, duplicate suppression, retransmission
-                     with an adaptive (Jacobson/Karels) timeout in ticks,
-                     connection establishment and teardown (ticket 003)
+crates/transport  -- reliable ordered delivery: sequence numbers
+                     (byte offsets; SYN/FIN do NOT consume sequence
+                     space, unlike TCP — see ADR-003), cumulative +
+                     selective ACKs, selective-repeat receive buffer,
+                     duplicate suppression, a single connection-level
+                     retransmission timer with adaptive (Jacobson/Karels)
+                     RTO in ticks, 3-way handshake and graceful teardown
+                     (ticket 003, DONE)
                   -- flow and congestion control: receiver-advertised
                      window, AIMD congestion window, fast retransmit
                      (ticket 004)

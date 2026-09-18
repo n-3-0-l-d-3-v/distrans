@@ -42,6 +42,26 @@ corruption / 30% truncation across 40 seeds to prove the two crates
 actually compose, not just pass their own tests in isolation. See
 [ADR-002](docs/design/decisions/ADR-002-framing-and-integrity.md).
 
+**Ticket 003 (reliable, ordered transport) is done.** `crates/transport`:
+a real connection state machine over the hostile channel — 3-way
+handshake, byte-offset sequencing, cumulative + selective ACKs, a
+selective-repeat receive buffer, adaptive (Jacobson/Karels) RTO with
+Karn's algorithm, graceful teardown. Unlike TCP, SYN/FIN don't consume
+sequence-number space; that's a deliberate, examined choice, not an
+oversight (see the ADR for the trade-off). Getting the end-to-end tests
+to pass surfaced two real state-transition races — a `Closed` connection
+ignored a lingering retransmitted FIN, and the handshake required a bare
+completing ACK that a data-sending client's own retry never resent — both
+fixed and pinned with deterministic regression tests after discovering
+the original statistical seed-loop test that first found them doesn't
+reliably re-catch either on its own. A third finding, in the test itself
+rather than the transport: the headline property's "always fully
+completes" assertion was stronger than bounded retries can honestly
+promise against the harsher end of its own fault-probability ranges;
+fixed to assert what's actually always true (delivered data is a clean
+prefix of what was sent) rather than loosening the ranges to hide it. See
+[ADR-003](docs/design/decisions/ADR-003-reliable-transport.md).
+
 See [tickets/](tickets/) for the live phase-by-phase ticket board and
 [docs/design/](docs/design/) for constraints, invariants and architecture
 decision records.
