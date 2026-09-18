@@ -81,6 +81,21 @@ reporting: quadrupling the receive window bought nothing once the
 congestion window, not the receive window, was the real bottleneck. See
 [ADR-004](docs/design/decisions/ADR-004-flow-and-congestion-control.md).
 
+**Ticket 005 (RPC with idempotent retry) is done.** `crates/rpc`:
+`transport::Connection` is a byte stream with no message boundaries, so
+a small length-prefixed reassembly layer sits underneath request/
+response framing. The client retries independently of the connection's
+own reliable-delivery retries — not redundant, since a client's patience
+and the connection's retry budget are different things, and the harness
+deliberately uses a short, fixed retry deadline that forces frequent
+retries even on a healthy connection, exactly what an impatient real
+client does. That means the server's dedup table isn't a defensive
+nicety — it's what makes retrying safe at all, proven end to end: for
+arbitrary calls and fault profiles, every request's handler runs exactly
+once, and every response the client sees for one request is identical
+across however many times it was retried. See
+[ADR-005](docs/design/decisions/ADR-005-rpc.md).
+
 See [tickets/](tickets/) for the live phase-by-phase ticket board and
 [docs/design/](docs/design/) for constraints, invariants and architecture
 decision records.

@@ -55,9 +55,11 @@ crates/transport  -- reliable ordered delivery: sequence numbers
                      window on every segment (incl. handshake), RFC 5681
                      AIMD congestion window, fast retransmit on 3 dup
                      ACKs (ticket 004, DONE)
-crates/rpc        -- request/response over transport: request ids,
-                     client retry, server-side idempotency (at-most-once
-                     execution) via a dedup table (ticket 005)
+crates/rpc        -- request/response over transport: length-prefixed
+                     framing over the byte stream, client retry
+                     independent of Connection's own, server-side
+                     idempotency (at-most-once execution) via a dedup
+                     table (ticket 005, DONE)
 crates/workload   -- closing ticket: an RPC key-value service driven
                      through hostile profiles, goodput-vs-loss benchmarks
                      against stop-and-wait and go-back-N baselines, seeded
@@ -88,9 +90,11 @@ crates/workload   -- closing ticket: an RPC key-value service driven
   arbitrary later times, since a legitimate window/cwnd reduction never
   retroactively shrinks data already in flight (a real finding, not an
   assumption — see ADR-004).
-- **rpc**: under retries and duplicated requests, every request's handler
-  executes at most once, and every completed call's response is the one
-  that execution produced.
+- **rpc**: under retries and duplicated requests — including retries the
+  RPC layer itself forces via a short client deadline, independent of
+  whether the channel ever actually lost anything — every request's
+  handler executes at most once, and every completed call's response is
+  the one that execution produced.
 
 ## Research question
 
