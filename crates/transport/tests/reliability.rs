@@ -48,6 +48,18 @@ impl Sim {
     /// Runs the client sending `data` to the server, then both sides
     /// closing, until convergence or `max_ticks`.
     fn run_client_to_server(&mut self, data: &[u8], max_ticks: u64) -> SimResult {
+        self.run_client_to_server_checked(data, max_ticks, |_, _| {})
+    }
+
+    /// As `run_client_to_server`, but calls `check(client, server)` after
+    /// every tick — for invariants (like ticket 004's flow-control cap)
+    /// that must hold throughout the run, not just at the end.
+    fn run_client_to_server_checked(
+        &mut self,
+        data: &[u8],
+        max_ticks: u64,
+        mut check: impl FnMut(&Connection, &Connection),
+    ) -> SimResult {
         let mut pending_c2s: Vec<Vec<u8>> = Vec::new();
         let mut pending_s2c: Vec<Vec<u8>> = Vec::new();
         let mut delivered = Vec::new();
@@ -59,6 +71,21 @@ impl Sim {
         loop {
             self.tick += 1;
             let now = Tick(self.tick);
+
+            // Drain promptly, before anything else this tick touches the
+            // connections: this models an application that reads as soon
+            // as data is available, so the advertised receive window
+            // reflects true free capacity rather than a transient dip
+            // from data sitting undrained for one tick. A receiver is
+            // always allowed to advertise a smaller window than before
+            // (RFC 793 discourages it but doesn't forbid it, and a real
+            // sender must already tolerate it) — but a slow-draining test
+            // harness manufacturing that dip on every tick would make
+            // ticket 004's own flow-control invariant unfalsifiable by
+            // any real sender bug, since a shrinking window can make
+            // already-in-flight bytes look like a violation independent
+            // of whether admission itself was ever wrong.
+            delivered.extend(self.server.recv());
 
             for d in pending_c2s.drain(..) {
                 self.c2s.send(&d);
@@ -75,8 +102,6 @@ impl Sim {
             }
             pending_c2s.extend(self.client.on_tick(now));
             pending_s2c.extend(self.server.on_tick(now));
-
-            delivered.extend(self.server.recv());
 
             if self.client.state() == State::Established && !sent_all {
                 pending_c2s.extend(self.client.send(now, data));
@@ -100,6 +125,8 @@ impl Sim {
             // received a SYN has no way to know an attempt was ever
             // made, and legitimately waits in `Listening` forever; only
             // the side that initiated something can time out.
+            check(&self.client, &self.server);
+
             let both_closed =
                 self.client.state() == State::Closed && self.server.state() == State::Closed;
             let either_failed = matches!(self.client.state(), State::Failed(_))
@@ -121,10 +148,11 @@ impl Sim {
 fn config() -> Config {
     Config {
         segment_size: 64,
-        max_in_flight_segments: 6,
+        recv_window_capacity: 6 * 64,
         min_rto: 2,
         max_rto: 300,
         max_retries: 15,
+        fast_retransmit_dup_acks: 3,
     }
 }
 
@@ -271,6 +299,40 @@ proptest! {
                 );
             }
             other => prop_assert!(false, "client ended in unexpected state {other:?}"),
+        }
+    }
+
+}
+
+/// Not a correctness property, but real observability data
+/// (`docs/DEFINITION_OF_DONE.md` item 6): goodput (delivered
+/// application bytes per simulated tick) against induced loss, at a
+/// couple of receive-window sizes. Numbers are pasted into ADR-004
+/// rather than asserted on, since "goodput should be higher with a
+/// bigger window" is not true at every loss rate (a big window just
+/// means more gets lost per RTO cycle too) — this is measurement, not a
+/// property to enforce.
+#[test]
+fn report_goodput_vs_loss_and_window_size() {
+    for window_segments in [2u32, 8, 32] {
+        for loss in [0.0, 0.05, 0.1, 0.2] {
+            let mut cfg = config();
+            cfg.recv_window_capacity = window_segments * cfg.segment_size as u32;
+            cfg.max_retries = 30;
+            cfg.max_rto = 1000;
+            let profile = hostile_profile(loss, 0.0, 2, 0.0, 0.0);
+            let data = vec![7u8; 20_000];
+            let (mut sim, syn) = Sim::new(cfg, 1, 2, profile);
+            sim.c2s.send(&syn);
+            let result = sim.run_client_to_server(&data, 60_000);
+            let goodput = result.delivered_at_server.len() as f64 / result.ticks_used as f64;
+            println!(
+                "window={:>5}B loss={loss:>4.2} -> {:>5} ticks, {:>6} bytes delivered, goodput={goodput:.3} B/tick, final={:?}",
+                cfg.recv_window_capacity,
+                result.ticks_used,
+                result.delivered_at_server.len(),
+                result.client_state,
+            );
         }
     }
 }
