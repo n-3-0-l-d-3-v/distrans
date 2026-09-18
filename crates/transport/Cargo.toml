@@ -1,0 +1,13 @@
+[package]
+name = "transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+frame = { path = "../frame" }
+channel = { path = "../channel" }
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/channel",
     "crates/frame",
+    "crates/transport",
 ]
 
 [workspace.package]
