@@ -73,11 +73,14 @@ crates/workload   -- closing ticket: an RPC key-value service driven
   bit errors and all bursts up to 32 bits are detected, which CRC-32C
   guarantees for these frame sizes; this is property-tested, not just
   claimed.
-- **transport**: for arbitrary data and arbitrary fault profiles short of
-  total partition, the receiver's delivered byte stream equals the
-  sender's, exactly: no loss, no duplication, no reordering, no corruption.
-  Under total partition, the connection reports failure after bounded
-  retries rather than hanging.
+- **transport**: whatever the receiver delivers is always an exact,
+  gap-free, unreordered, uncorrupted prefix of what the sender sent —
+  proven for arbitrary data and arbitrary fault profiles, including ones
+  hostile enough that bounded retries give up before the whole transfer
+  completes (a real, examined finding — see ADR-003 — not merely a
+  weaker claim assumed for convenience). Under total, permanent loss,
+  the connection reports failure within a bounded number of ticks rather
+  than hanging.
 - **flow control**: the sender never has more unacknowledged data in flight
   than the receiver's advertised window allows.
 - **rpc**: under retries and duplicated requests, every request's handler
