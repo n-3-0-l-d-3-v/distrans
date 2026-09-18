@@ -63,7 +63,8 @@ crates/rpc        -- request/response over transport: length-prefixed
 crates/workload   -- closing ticket: an RPC key-value service driven
                      through hostile profiles, goodput-vs-loss benchmarks
                      against stop-and-wait and go-back-N baselines, seeded
-                     chaos, and the research-question write-up (ticket 006)
+                     chaos, and the research-question write-up
+                     (ticket 006, DONE)
 ```
 
 ## Invariants each layer must prove (not just assert)
@@ -103,5 +104,13 @@ crates/workload   -- closing ticket: an RPC key-value service driven
 
 Each layer's ADR records which TCP mechanism the hostile channel *forced*
 (the property fails without it, demonstrably) versus which was a choice
-(an alternative works as well, measured). The closing ticket's ADR
-collects the answer.
+(an alternative works as well, measured). **Answered in
+[ADR-006](decisions/ADR-006-integration-and-benchmarks.md)**: framing,
+checksums, retransmission-on-timeout, some acknowledgment, some flow
+control, and some congestion backoff are forced; SYN/FIN consuming
+sequence space, go-back-N's specific discard-on-reorder receiver
+(measured worse than the selective-repeat alternative once any
+reordering appears), and a single connection-level RTO timer are chosen,
+not forced. Getting *which* congestion backoff right turned out to be a
+harder, only-partly-answered question — AIMD is forced-in-kind but this
+phase's specific tuning measurably underperforms at sustained 20% loss.
