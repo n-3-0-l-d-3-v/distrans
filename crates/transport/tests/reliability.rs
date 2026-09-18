@@ -286,13 +286,18 @@ proptest! {
                 prop_assert_eq!(&result.delivered_at_server, &data);
                 prop_assert_eq!(result.server_state, State::Closed);
             }
-            State::Failed(_) => {
+            State::Failed(_) | State::Established | State::Closing => {
                 // The transport's actual, always-true guarantee: whatever
                 // did arrive is delivered in order with no gaps, no
                 // reordering and no corruption — i.e. an exact *prefix* of
                 // what was sent — even when the channel was hostile enough
                 // that completing the whole transfer within the retry
-                // budget wasn't possible.
+                // budget (`Failed`) or even the tick budget (still
+                // `Established`/`Closing` when `run_client_to_server` gave
+                // up waiting — the same harsh-profile-exceeds-a-generous-
+                // budget situation ADR-003 already documents, just also
+                // possible without the connection ever formally giving up)
+                // wasn't possible.
                 prop_assert!(
                     data.starts_with(&result.delivered_at_server),
                     "delivered bytes are not a clean prefix of the sent data"
