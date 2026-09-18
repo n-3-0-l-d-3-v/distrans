@@ -1,0 +1,13 @@
+[package]
+name = "rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+transport = { path = "../transport" }
+thiserror.workspace = true
+
+[dev-dependencies]
+channel = { path = "../channel" }
+proptest.workspace = true
