@@ -620,3 +620,112 @@ impl Connection {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        Config {
+            segment_size: 16,
+            max_in_flight_segments: 4,
+            min_rto: 5,
+            max_rto: 100,
+            max_retries: 5,
+        }
+    }
+
+    /// The completing ACK of the 3-way handshake is never delivered
+    /// (simulating it being lost); the client instead immediately sends
+    /// real data, whose segment also carries the ACK flag. The server
+    /// must still complete its handshake and deliver the data — it must
+    /// not require a separate, bare completing ACK first.
+    #[test]
+    fn a_lost_bare_completing_ack_does_not_strand_the_server_if_data_follows() {
+        let (mut client, syn) = Connection::connect(cfg(), Tick(0));
+        let mut server = Connection::listen(cfg(), Tick(0));
+
+        let synack = server.on_datagram(Tick(1), &syn);
+        assert_eq!(synack.len(), 1);
+        assert_eq!(server.state(), State::SynReceived);
+
+        let client_responses = client.on_datagram(Tick(2), &synack[0]);
+        assert_eq!(client.state(), State::Established);
+        // client_responses[0] is the bare completing ACK — simulate it
+        // being lost by simply never delivering it to the server.
+        assert_eq!(client_responses.len(), 1);
+
+        let data_segments = client.send(Tick(3), b"hello, server");
+        assert_eq!(data_segments.len(), 1);
+
+        // The server never saw the bare ACK, only this data segment.
+        server.on_datagram(Tick(4), &data_segments[0]);
+        assert_eq!(
+            server.state(),
+            State::Established,
+            "server must complete its handshake from a data-carrying ACK alone"
+        );
+        assert_eq!(server.recv(), b"hello, server");
+    }
+
+    /// The mirror case: the server's SYN-ACK is retransmitted (because it
+    /// never saw the client's first completing ACK) after the client has
+    /// already moved on to `Established`. The client must resend its
+    /// completing ACK again, not silently treat the duplicate as routine.
+    #[test]
+    fn a_duplicate_synack_after_establishment_gets_the_completing_ack_resent() {
+        let (mut client, syn) = Connection::connect(cfg(), Tick(0));
+        let mut server = Connection::listen(cfg(), Tick(0));
+        let synack = server.on_datagram(Tick(1), &syn);
+        client.on_datagram(Tick(2), &synack[0]);
+        assert_eq!(client.state(), State::Established);
+
+        // Server retransmits its SYN-ACK (its own completing ACK never
+        // arrived, from its point of view).
+        let resent = client.on_datagram(Tick(3), &synack[0]);
+        assert_eq!(
+            resent.len(),
+            1,
+            "a duplicate SYN-ACK after establishment must still get a completing ACK back"
+        );
+        let ack_frame = frame::decode(&resent[0]).unwrap();
+        assert_eq!(ack_frame.flags & FLAG_ACK, FLAG_ACK);
+        assert_eq!(ack_frame.flags & FLAG_SYN, 0);
+    }
+
+    /// A FIN that arrives after this side is already fully `Closed`
+    /// (because its own fin_ack to the peer was lost) still gets a fresh
+    /// fin_ack — otherwise the peer retries forever against a side that
+    /// has stopped listening.
+    #[test]
+    fn a_closed_connection_still_acks_a_lingering_retransmitted_fin() {
+        let (mut client, syn) = Connection::connect(cfg(), Tick(0));
+        let mut server = Connection::listen(cfg(), Tick(0));
+        let synack = server.on_datagram(Tick(1), &syn);
+        let ack = client.on_datagram(Tick(2), &synack[0]);
+        server.on_datagram(Tick(3), &ack[0]);
+        assert_eq!(server.state(), State::Established);
+
+        let fin = client.close(Tick(4));
+        assert_eq!(fin.len(), 1);
+        let fin_ack = server.on_datagram(Tick(5), &fin[0]);
+        assert_eq!(fin_ack.len(), 1);
+        // Simulate the fin_ack being lost: the client never sees it, and
+        // the server independently closes its own side too.
+        let server_fin = server.close(Tick(6));
+        assert_eq!(server_fin.len(), 1);
+        let client_fin_ack = client.on_datagram(Tick(7), &server_fin[0]);
+        server.on_datagram(Tick(8), &client_fin_ack[0]);
+        assert_eq!(server.state(), State::Closed);
+
+        // The client, having never seen its fin_ack, retransmits its FIN
+        // once more. The server must still answer even though it is
+        // already Closed.
+        let retransmitted_fin = client.build_fin();
+        let response = server.on_datagram(Tick(9), &retransmitted_fin);
+        assert_eq!(response.len(), 1);
+        let (header, _) =
+            SegmentHeader::decode(&frame::decode(&response[0]).unwrap().payload).unwrap();
+        assert!(header.fin_ack);
+    }
+}
