@@ -13,7 +13,22 @@ repo commit-for-commit.
 
 ## Status
 
-**Phase 5 — QUEUED**
+**Phase 5 — ACTIVE.** See [docs/design/WIRE.md](docs/design/WIRE.md)
+for the full layer map (hostile channel -> framing -> transport -> flow
+control -> RPC) and the simulation model (virtual tick time, seeded
+hostility).
+
+**Ticket 001 (hostile channel) is done.** `crates/channel`: an
+event-driven, virtual-tick-time datagram channel with seeded fault
+injection (loss, duplication, reordering, corruption, truncation) plus
+scripted per-datagram overrides for pinning one exact corner case. Faults
+are decided at send time from a hand-rolled `SplitMix64` (no `rand`
+dependency, so a recorded seed survives a dependency bump), so a whole
+run replays byte-for-byte from `(seed, profile)` — proven, not assumed,
+for 256 arbitrary profiles, and checked statistically that each fault's
+observed rate matches its configured probability. 21 unit tests, 3
+property tests, 1 statistical test, 1 no-wall-clock guard test. See
+[ADR-001](docs/design/decisions/ADR-001-hostile-channel.md).
 
 See [tickets/](tickets/) for the live phase-by-phase ticket board and
 [docs/design/](docs/design/) for constraints, invariants and architecture
@@ -34,9 +49,9 @@ Framing, checksums/integrity, sequence numbers, ACKs, retransmission, selective 
 ## Sibling repositories
 
 - [mentat](https://github.com/n-3-0-l-d-3-v/mentat) — THE MACHINE (COMPLETE)
-- [chakobsa](https://github.com/n-3-0-l-d-3-v/chakobsa) — THE LANGUAGE (QUEUED)
-- [muaddib](https://github.com/n-3-0-l-d-3-v/muaddib) — THE KERNEL (QUEUED)
-- [sietch](https://github.com/n-3-0-l-d-3-v/sietch) — THE VAULT (ACTIVE)
+- [chakobsa](https://github.com/n-3-0-l-d-3-v/chakobsa) — THE LANGUAGE (COMPLETE)
+- [muaddib](https://github.com/n-3-0-l-d-3-v/muaddib) — THE KERNEL (COMPLETE)
+- [sietch](https://github.com/n-3-0-l-d-3-v/sietch) — THE VAULT (COMPLETE)
 - [choam](https://github.com/n-3-0-l-d-3-v/choam) — THE DATABASE (QUEUED)
 - [landsraad](https://github.com/n-3-0-l-d-3-v/landsraad) — THE COLONY (QUEUED)
 - [ghola](https://github.com/n-3-0-l-d-3-v/ghola) — THE HISTORY (QUEUED)
