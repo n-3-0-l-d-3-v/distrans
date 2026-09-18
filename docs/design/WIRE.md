@@ -52,8 +52,9 @@ crates/transport  -- reliable ordered delivery: sequence numbers
                      RTO in ticks, 3-way handshake and graceful teardown
                      (ticket 003, DONE)
                   -- flow and congestion control: receiver-advertised
-                     window, AIMD congestion window, fast retransmit
-                     (ticket 004)
+                     window on every segment (incl. handshake), RFC 5681
+                     AIMD congestion window, fast retransmit on 3 dup
+                     ACKs (ticket 004, DONE)
 crates/rpc        -- request/response over transport: request ids,
                      client retry, server-side idempotency (at-most-once
                      execution) via a dedup table (ticket 005)
@@ -81,8 +82,12 @@ crates/workload   -- closing ticket: an RPC key-value service driven
   weaker claim assumed for convenience). Under total, permanent loss,
   the connection reports failure within a bounded number of ticks rather
   than hanging.
-- **flow control**: the sender never has more unacknowledged data in flight
-  than the receiver's advertised window allows.
+- **flow control**: admission never lets more data become unacknowledged
+  than `min(peer window, congestion window)` allowed *at the moment of
+  admission* — proven directly, not by an instantaneous snapshot at
+  arbitrary later times, since a legitimate window/cwnd reduction never
+  retroactively shrinks data already in flight (a real finding, not an
+  assumption — see ADR-004).
 - **rpc**: under retries and duplicated requests, every request's handler
   executes at most once, and every completed call's response is the one
   that execution produced.

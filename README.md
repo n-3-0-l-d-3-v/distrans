@@ -62,6 +62,25 @@ fixed to assert what's actually always true (delivered data is a clean
 prefix of what was sent) rather than loosening the ranges to hide it. See
 [ADR-003](docs/design/decisions/ADR-003-reliable-transport.md).
 
+**Ticket 004 (flow and congestion control) is done.** Every segment,
+including the handshake, now carries the sender's currently free receive
+capacity in bytes; admission is capped by `min(peer window, congestion
+window)`. Congestion control is RFC 5681 AIMD: slow start, congestion
+avoidance, multiplicative decrease on an RTO, fast retransmit on 3
+duplicate ACKs. Its own headline property test was wrong twice before it
+was right: "in-flight never exceeds the window at every tick" failed on
+a clean channel because an RTO's `cwnd` reset doesn't retroactively
+shrink data already in flight (exactly like real TCP), and a fixed
+post-retransmission grace period — the first attempted fix — was also
+wrong, since recovery time depends on RTO/backoff magnitude, not a
+constant tick count. Fixed by testing the actual claim (admission
+respects the window when it runs) directly and deterministically instead
+of through a confounded multi-tick simulation. A goodput-vs-loss
+measurement across window sizes found something genuinely worth
+reporting: quadrupling the receive window bought nothing once the
+congestion window, not the receive window, was the real bottleneck. See
+[ADR-004](docs/design/decisions/ADR-004-flow-and-congestion-control.md).
+
 See [tickets/](tickets/) for the live phase-by-phase ticket board and
 [docs/design/](docs/design/) for constraints, invariants and architecture
 decision records.
