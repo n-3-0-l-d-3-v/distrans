@@ -1,10 +1,9 @@
 //! `docs/design/WIRE.md`: no layer in this repo may read physical time.
-//! This is the same guard pattern as muaddib's
-//! `clock/tests/no_wall_clock.rs`. It currently scans only `channel`'s
-//! own `src/`; later crates in this repo should add an equivalent test
-//! (or this one should be promoted to a workspace-wide scan once there's
-//! more than one crate to scan) rather than assuming the constraint holds
-//! by convention.
+//! Same guard pattern as muaddib's `clock/tests/no_wall_clock.rs`.
+//! Promoted (ticket 003) from scanning only `channel`'s own `src/` to
+//! every crate's `src/` in the workspace, now that there's more than one
+//! crate to scan — a per-crate copy would just be N places to forget to
+//! extend.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,11 +33,20 @@ fn code_part(line: &str) -> &str {
 }
 
 #[test]
-fn no_channel_source_reads_physical_time() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+fn no_workspace_crate_source_reads_physical_time() {
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
-    rust_files(&src, &mut files);
-    assert!(!files.is_empty());
+    for krate in fs::read_dir(crates_dir).unwrap() {
+        let src = krate.unwrap().path().join("src");
+        if src.is_dir() {
+            rust_files(&src, &mut files);
+        }
+    }
+    assert!(
+        files.len() >= 2,
+        "scanned suspiciously few files ({}), is the path right?",
+        files.len()
+    );
 
     let mut violations = Vec::new();
     for file in &files {
@@ -54,7 +62,17 @@ fn no_channel_source_reads_physical_time() {
     }
     assert!(
         violations.is_empty(),
-        "physical-time APIs used in channel source:\n{}",
+        "physical-time APIs used in workspace crate source:\n{}",
         violations.join("\n")
     );
+}
+
+#[test]
+fn the_scanner_would_catch_a_violation() {
+    assert!(FORBIDDEN
+        .iter()
+        .any(|n| code_part("let t = std::time::Instant::now();").contains(n)));
+    assert!(!FORBIDDEN
+        .iter()
+        .any(|n| code_part("// never call Instant::now()").contains(n)));
 }
