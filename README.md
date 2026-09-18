@@ -30,6 +30,18 @@ observed rate matches its configured probability. 21 unit tests, 3
 property tests, 1 statistical test, 1 no-wall-clock guard test. See
 [ADR-001](docs/design/decisions/ADR-001-hostile-channel.md).
 
+**Ticket 002 (framing and integrity) is done.** `crates/frame`: a fixed
+12-byte binary header plus a CRC-32C trailer over header+payload. Checks
+run cheapest-first (length, then version, then the checksum scan), and
+every rejection reason is its own error variant. Property-tested (1024
+cases each): round-trips for arbitrary frames, every single-bit and
+odd-count multi-bit flip is either caught or harmlessly decodes back to
+the original, and decoding arbitrary garbage or a truncated prefix never
+panics. Fed real frames through a real hostile `Channel` at 40%
+corruption / 30% truncation across 40 seeds to prove the two crates
+actually compose, not just pass their own tests in isolation. See
+[ADR-002](docs/design/decisions/ADR-002-framing-and-integrity.md).
+
 See [tickets/](tickets/) for the live phase-by-phase ticket board and
 [docs/design/](docs/design/) for constraints, invariants and architecture
 decision records.
