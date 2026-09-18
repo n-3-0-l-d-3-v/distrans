@@ -157,6 +157,15 @@ actually expects to see, not assumed adequate for "anything short of
   implementation to compare against; the input *is* the ground truth for
   "what should have arrived").
 
+**Postscript (ticket 006):** the same finding recurred in a different
+shape — the property's fixed tick budget, not just its retry budget,
+turned out exhaustible at the harshest corner of the tested probability
+ranges, leaving the connection still legitimately `Established`/
+`Closing` (never reaching `Failed`) when the simulation gave up waiting.
+The fix was the same one degree further: the prefix-correctness check
+now covers `Established`/`Closing` timeouts too, not only `Failed`. Same
+lesson, applied completely this time.
+
 ## Alternatives Considered
 
 1. **Per-segment retransmission timers.** Rejected in favor of the
